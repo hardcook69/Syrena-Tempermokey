@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Obserwacje – szybkie dodawanie z raportu dziennego
 // @namespace    https://apedps01.bzmw.gov.pl/
-// @version      1.3
+// @version      1.6
 // @updateURL    https://raw.githubusercontent.com/hardcook69/Syrena-Tempermokey/main/ObserwacjeSkrot.user.js
 // @downloadURL  https://raw.githubusercontent.com/hardcook69/Syrena-Tempermokey/main/ObserwacjeSkrot.user.js
 // @description  Dodawanie obserwacji mieszkańcom bezpośrednio z okna "Edycja raportu: Dzienny" - zapisuje się na serwerze (POST /api/observation), widoczne dla każdego kto ma zainstalowany ten sam skrypt.
@@ -344,6 +344,11 @@
     }
 
     // ---------- 3c. Wstrzykiwanie obu bloków w okno "Edycja raportu: Dzienny" ----------
+    // UWAGA: celowo BEZ Shadow DOM / Water.css. To okno raportu ma własny, obsługiwany
+    // przez JavaScript (DevExtreme) scroll - Shadow DOM w tym miejscu psuł przewijanie
+    // myszką całego raportu (prawdopodobnie retargeting zdarzeń wheel na granicy shadow
+    // roota gubił natywną obsługę scrolla appki). Zwykły wygląd inline jest tu bezpieczny
+    // funkcjonalnie, mimo że mniej efektowny niż w samodzielnym oknie zadań ad hoc.
     function tryInjectPanel() {
         if (document.getElementById('obs-skrot-panel')) return;
 
