@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         Filtr pokoju – lista mieszkańców
 // @namespace    https://apedps01.bzmw.gov.pl/
-// @version      1.0
+// @version      1.2
 // @updateURL    https://raw.githubusercontent.com/hardcook69/Syrena-Tempermokey/main/FiltrPokoju.user.js
 // @downloadURL  https://raw.githubusercontent.com/hardcook69/Syrena-Tempermokey/main/FiltrPokoju.user.js
-// @description  Dodaje pole "Pokój:" do siatek z listą mieszkańców (Mieszkańcy proponowani / biorący udział) i filtruje wiersze po numerze pokoju. Dokłada też "Zaznacz widoczne" oraz "Odznacz widoczne", żeby zaznaczanie obejmowało tylko przefiltrowane wiersze. Przy wejściu podnosi rozmiar strony, żeby filtr obejmował wszystkich mieszkańców, a nie tylko bieżącą stronę.
+// @description  Dodaje pole "Pokój:" do siatek z listą mieszkańców (Mieszkańcy proponowani / biorący udział) i filtruje wiersze po numerze pokoju. Przycisk "Sortuj" liczbowo porządkuje wiersze po numerze pokoju (rosnąco/malejąco). Dokłada też "Zaznacz widoczne" oraz "Odznacz widoczne", żeby zaznaczanie obejmowało tylko przefiltrowane wiersze. Przy wejściu podnosi rozmiar strony, żeby filtr i sortowanie obejmowały wszystkich mieszkańców, a nie tylko bieżącą stronę.
 // @match        *://apedps01.bzmw.gov.pl/*
 // @match        *://ttapedps01.bzmw.gov.pl/*
 // @run-at       document-idle
@@ -14,8 +14,9 @@
 (function () {
   'use strict';
 
-  var ROOM_HEADER = 'numer pokoju';   // po tym rozpoznajemy siatkę z mieszkańcami
-  var NAME_HEADER = 'mieszkaniec';
+  // rozpoznajemy siatkę z mieszkańcami po nagłówkach kolumn (tolerancyjnie – "zawiera")
+  function isRoomHeader(t) { return t.indexOf('numer pokoju') !== -1 || t === 'pokój' || t === 'pokoj'; }
+  function isNameHeader(t) { return t.indexOf('mieszkan') !== -1; }
 
   // ---------------------------------------------------------------- style
   var css = ''
@@ -42,8 +43,8 @@
     var hasName = false, roomIdx = null;
     cells.forEach(function (td) {
       var t = (td.textContent || '').trim().toLowerCase();
-      if (t === NAME_HEADER) hasName = true;
-      if (t === ROOM_HEADER) roomIdx = td.getAttribute('aria-colindex');
+      if (isNameHeader(t)) hasName = true;
+      if (isRoomHeader(t)) roomIdx = td.getAttribute('aria-colindex');
     });
     return (hasName && roomIdx) ? roomIdx : null;
   }
@@ -56,6 +57,12 @@
   function roomOfRow(row, colIdx) {
     var cell = row.querySelector('td[aria-colindex="' + colIdx + '"]');
     return (cell ? cell.textContent : '').trim().toLowerCase();
+  }
+
+  // Zamienia numer pokoju na liczbę do sortowania (np. "215" -> 215, "1A" -> 1); null gdy brak cyfr.
+  function roomNumber(txt) {
+    var m = (txt || '').match(/\d+/);
+    return m ? parseInt(m[0], 10) : null;
   }
 
   // ---------------------------------------------------------------- filtr
@@ -80,6 +87,41 @@
       if (check && !checked) cb.click();
       if (!check && checked) cb.click();
     });
+  }
+
+  // Liczbowe sortowanie wierszy po numerze pokoju (porządkuje kolejność w tabeli).
+  function sortRows(grid) {
+    var dir = grid.__rfSort;                 // 'asc' | 'desc' | null
+    if (!dir) return;
+    var rows = dataRows(grid);
+    if (!rows.length) return;
+    var tbody = rows[0].parentNode;
+    if (!tbody) return;
+    var sign = dir === 'desc' ? -1 : 1;
+    rows.sort(function (a, b) {
+      var ra = roomNumber(roomOfRow(a, grid.__rfCol));
+      var rb = roomNumber(roomOfRow(b, grid.__rfCol));
+      if (ra === null && rb === null) return 0;
+      if (ra === null) return 1;             // bez numeru -> na koniec
+      if (rb === null) return -1;
+      return (ra - rb) * sign;
+    });
+    var free = tbody.querySelector('tr.dx-freespace-row');
+    rows.forEach(function (r) { tbody.appendChild(r); });
+    if (free) tbody.appendChild(free);       // pusty wiersz zawsze na dół
+  }
+
+  // Nałóż sortowanie + filtr, nie wywołując własnego obserwatora (bez pętli).
+  function applyAll(grid) {
+    var obs = grid.__rfObs;
+    if (obs) obs.disconnect();
+    sortRows(grid);
+    applyFilter(grid);
+    if (obs && grid.__rfRowsView) {
+      setTimeout(function () {
+        obs.observe(grid.__rfRowsView, { childList: true, subtree: true });
+      }, 0);
+    }
   }
 
   // Najlepszym staraniem: ustaw najwiekszy rozmiar strony, żeby wszyscy
@@ -115,6 +157,7 @@
     grid.__rfInit = true;
     grid.__rfCol = colIdx;
     grid.__rfQuery = '';
+    grid.__rfSort = null;
 
     var bar = document.createElement('div');
     bar.className = 'rf-bar';
@@ -122,12 +165,14 @@
       '<label>Pokój:</label>' +
       '<input type="text" class="rf-input" placeholder="np. 215" inputmode="numeric">' +
       '<button type="button" class="rf-btn rf-clear" title="Wyczyść filtr">✕</button>' +
+      '<button type="button" class="rf-btn rf-sort" title="Sortuj po numerze pokoju">Sortuj: —</button>' +
       '<button type="button" class="rf-btn rf-sel">Zaznacz widoczne</button>' +
       '<button type="button" class="rf-btn rf-unsel">Odznacz widoczne</button>' +
       '<span class="rf-count"></span>';
 
     var input = bar.querySelector('.rf-input');
     grid.__rfCount = bar.querySelector('.rf-count');
+    var sortBtn = bar.querySelector('.rf-sort');
 
     var deb;
     input.addEventListener('input', function () {
@@ -138,49 +183,66 @@
     bar.querySelector('.rf-clear').addEventListener('click', function () {
       input.value = ''; grid.__rfQuery = ''; applyFilter(grid); input.focus();
     });
+    sortBtn.addEventListener('click', function () {
+      grid.__rfSort = grid.__rfSort === null ? 'asc' : (grid.__rfSort === 'asc' ? 'desc' : null);
+      sortBtn.textContent = 'Sortuj: ' + (grid.__rfSort === 'asc' ? '↑ rosnąco'
+                          : grid.__rfSort === 'desc' ? '↓ malejąco' : '—');
+      applyAll(grid);
+    });
     bar.querySelector('.rf-sel').addEventListener('click', function () { selectVisible(grid, true); });
     bar.querySelector('.rf-unsel').addEventListener('click', function () { selectVisible(grid, false); });
 
     // miejsce na pasek: toolbar nagłówka siatki (obok "Zaznacz wszystkich")
-    var place = grid.querySelector('.dx-datagrid-header-panel .dx-toolbar-before')
-             || grid.querySelector('.dx-datagrid-header-panel .dx-toolbar-items-container')
-             || grid.querySelector('.dx-datagrid-header-panel');
-    if (place) {
-      place.appendChild(bar);
+    var toolbar = grid.querySelector('.dx-datagrid-header-panel .dx-toolbar-before')
+             || grid.querySelector('.dx-datagrid-header-panel .dx-toolbar-items-container');
+    var panel = grid.querySelector('.dx-datagrid-header-panel');
+    var headers = grid.querySelector('.dx-datagrid-headers');
+    if (toolbar) {
+      toolbar.appendChild(bar);
+    } else if (panel) {
+      bar.style.display = 'flex'; bar.style.padding = '4px 6px';
+      panel.insertBefore(bar, panel.firstChild);
+    } else if (headers && headers.parentNode) {
+      bar.style.display = 'flex'; bar.style.padding = '4px 6px';
+      headers.parentNode.insertBefore(bar, headers);
     } else {
       grid.insertBefore(bar, grid.firstChild);
     }
 
-    // ponowne nałożenie filtra po przerysowaniu wierszy (stronicowanie, odświeżenie, przenoszenie)
+    // ponowne nałożenie sortowania + filtra po przerysowaniu wierszy
+    // (stronicowanie, odświeżenie, przenoszenie między listami)
     var rowsView = grid.querySelector('.dx-datagrid-rowsview');
     if (rowsView) {
+      grid.__rfRowsView = rowsView;
       var rdeb;
-      var obs = new MutationObserver(function () {
+      grid.__rfObs = new MutationObserver(function () {
         clearTimeout(rdeb);
-        rdeb = setTimeout(function () { applyFilter(grid); }, 50);
+        rdeb = setTimeout(function () { applyAll(grid); }, 60);
       });
-      obs.observe(rowsView, { childList: true, subtree: true });
+      grid.__rfObs.observe(rowsView, { childList: true, subtree: true });
     }
 
     raisePageSize(grid);
-    applyFilter(grid);
+    applyAll(grid);
   }
 
-  function scan(root) {
-    var grids = (root.querySelectorAll ? root.querySelectorAll('.dx-datagrid') : []);
+  function scan() {
+    var grids = document.querySelectorAll('.dx-datagrid');
     Array.prototype.forEach.call(grids, injectInto);
-    if (root.matches && root.matches('.dx-datagrid')) injectInto(root);
   }
 
-  // obserwuj pojawiające się okna/siatki
-  var mo = new MutationObserver(function (muts) {
-    muts.forEach(function (m) {
-      Array.prototype.forEach.call(m.addedNodes, function (n) {
-        if (n.nodeType === 1) scan(n);
-      });
-    });
-  });
-  mo.observe(document.body, { childList: true, subtree: true });
+  // Dowolna zmiana DOM -> odpięte, zdebouncowane przeskanowanie całej strony.
+  // Dzięki temu łapiemy siatkę także wtedy, gdy nagłówki dorysują się z opóźnieniem.
+  var sdeb;
+  function scheduleScan() { clearTimeout(sdeb); sdeb = setTimeout(scan, 150); }
 
-  scan(document);
+  var mo = new MutationObserver(scheduleScan);
+  mo.observe(document.documentElement, { childList: true, subtree: true });
+
+  // Dodatkowa siatka bezpieczeństwa: skanuj co 1,5 s przez pierwsze pół minuty
+  // (gdyby obserwator czegoś nie złapał), a potem już tylko na zmiany DOM.
+  var ticks = 0;
+  var iv = setInterval(function () { scan(); if (++ticks > 20) clearInterval(iv); }, 1500);
+
+  scan();
 })();
